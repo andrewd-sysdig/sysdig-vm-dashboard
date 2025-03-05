@@ -11,21 +11,29 @@ spec:
     spec:
       template:
         spec:
+          securityContext:
+            runAsUser: 1000
+            fsGroup: 1000
           containers:
           - name: sysdig-vm-import-job
             image: ghcr.io/andrewd-sysdig/sysdig-vm-dashboard:latest # You may want to update this to pin it to a version
             imagePullPolicy: IfNotPresent
             resources:
               requests:
-                memory: "2048Mi" # Memory used by this job seems to peak at twice the size of the uncompressed CSV file
+                memory: "512Mi" 
+                cpu: "1000m"  # Single threaded python so no need for more than 1CPU
+              limits:
+                memory: "3000Mi" 
                 cpu: "1000m"
             env:
-            - name: BATCH_SIZE
-              value: "500000" # You shouldn't need to change this
-            - name: UPDATE_BATCH_SIZE
-              value: "5000" # You shouldn't need to change this
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: TZ
+              value: "Australia/Sydney"
+            - name: IMPORT_BATCH_SIZE
+              value: "500000" # How many records to import at a a time from CSV. 500k should use less than 1GB memory. Lower will be slower.
             - name: VULN_NOT_SEEN_CLOSE
-              value: "1" # Number of days to wait before closing a vulnerability that hasn't been seen in a report
+              value: "1"
             - name: REPORT_DOWNLOADS
               value: "sysdig_reports/to_process" # Where the .csv.gz reports will be downlaoded to before processing - This should be a PVC
             - name: REPORT_ARCHIVE_DIR
@@ -41,6 +49,8 @@ spec:
               value: "https://app.au1.sysdig.com" # Your Sysdig Region URL
             - name: ALL_VULNS_TABLE_NAME
               value: "sysdig_vulns" # Name of the table to use in clickhouse to store the vulnerability data (You shouldn't need to change this)
+            - name: VULN_SEVERITY_TO_KEEP
+              value: "High,Critical" # Which severities to keep in the DB from the CSV
             - name: CLICKHOUSE_HOSTNAME
               value: "clickhouse" # Only need to change if you change the cluster IP svc name
             - name: CLICKHOUSE_USER
@@ -50,5 +60,12 @@ spec:
                 secretKeyRef:
                   name: clickhouse-password
                   key: CLICKHOUSE_PASSWORD
-            #args: ['0']
+            #command: ["sleep", "infinity"]
+            volumeMounts:
+            - name: data
+              mountPath: /sysdig_reports
+          volumes:
+          - name: data
+            persistentVolumeClaim:
+              claimName: sysdig-vm-reports-pvc
           restartPolicy: OnFailure

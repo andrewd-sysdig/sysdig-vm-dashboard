@@ -11,7 +11,7 @@ spec:
   containers:
   - name: pvc-pod
     #image: busybox
-    image: docker.io/fernii/sysdig-vm-dashboard:9
+    image: ghcr.io/andrewd-sysdig/sysdig-vm-dashboard:latest
     env:
     - name: TZ
       value: "Australia/Sydney"
@@ -22,5 +22,5 @@ spec:
   volumes:
   - name: data
     persistentVolumeClaim: 
-      claimName: sysdig-vm-reports-pvc-c
+      claimName: sysdig-vm-reports-pvc-p
 

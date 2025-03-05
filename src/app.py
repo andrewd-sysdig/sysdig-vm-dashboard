@@ -45,6 +45,12 @@ else:
     logging.error(f"ENV Var ALL_VULNS_TABLE_NAME not set")
     exit(1)
 
+if os.getenv('VULN_SEVERITY_TO_KEEP') is not None:
+    VULN_SEVERITY_TO_KEEP = os.getenv('VULN_SEVERITY_TO_KEEP', 'High,Critical').split(',')
+else:
+    logging.error(f"ENV Var VULN_SEVERITY_TO_KEEP not set")
+    exit(1)
+
 if os.getenv('CLICKHOUSE_HOSTNAME') is not None:
     CLICKHOUSE_HOSTNAME = os.getenv('CLICKHOUSE_HOSTNAME')
 else:
@@ -167,6 +173,9 @@ def create_summary_table():
             "k8s_workload_type" text,
             "severity" text,
             "vuln_count" UInt64,
+            "in_use" bool,
+            "risk_accepted" bool,
+            "public_exploit" bool,
             "report_date" Date
         )ENGINE = MergeTree()
         ORDER BY (k8s_cluster_name, k8s_namespace_name, k8s_workload_name, k8s_workload_type, severity, report_date); 
@@ -301,10 +310,10 @@ def drop_table(table_name):
 def insert_summary_table(report_date, dedup_table_name):
     logging.info(f"Inserting into summary table for {report_date}...")
     insert_query = f"""
-        INSERT INTO {ALL_VULNS_TABLE_NAME}_summary (k8s_cluster_name, k8s_namespace_name, k8s_workload_name, k8s_workload_type, severity, vuln_count, report_date)
-        SELECT k8s_cluster_name, k8s_namespace_name, k8s_workload_name, k8s_workload_type, severity, count(*), '{report_date}'
+        INSERT INTO {ALL_VULNS_TABLE_NAME}_summary (k8s_cluster_name, k8s_namespace_name, k8s_workload_name, k8s_workload_type, severity, in_use, risk_accepted, public_exploit, vuln_count, report_date)
+        SELECT k8s_cluster_name, k8s_namespace_name, k8s_workload_name, k8s_workload_type, severity, in_use, risk_accepted, public_exploit, count(*), '{report_date}'
         FROM {dedup_table_name}
-        GROUP BY k8s_cluster_name, k8s_namespace_name, k8s_workload_name, k8s_workload_type, severity
+        GROUP BY k8s_cluster_name, k8s_namespace_name, k8s_workload_name, k8s_workload_type, severity, in_use, risk_accepted, public_exploit
     """
     client.command(insert_query)
 
@@ -373,7 +382,7 @@ def update_vuln_status_open(report_date):
 
 def process_files():
         # Get all files in the directory
-        files = [f for f in os.listdir(REPORT_DOWNLOADS) if f.endswith('.csv.gz')]
+        files = [f for f in os.listdir(REPORT_DOWNLOADS) if f.endswith('.gz')]
         # Sort files by date in filename
         files.sort(key=get_date_from_filename)
 
@@ -387,12 +396,13 @@ def process_files():
             import_table_name=ALL_VULNS_TABLE_NAME + "_" + report_date.strftime('%Y_%m_%d')
 
             create_temp_import_table(import_table_name)
-
+            
             # Process the file in chunks and insert it into the temp import table
-            with gzip.open(file_path, 'rt') as f_in:
-                dtype = 'str'
-                for chunk in pd.read_csv(f_in, chunksize=IMPORT_BATCH_SIZE, dtype=dtype):
-                    process_chunk(chunk, file_path, import_table_name)
+            dtype = 'str'
+            for chunk in pd.read_csv(file_path, chunksize=IMPORT_BATCH_SIZE, dtype=dtype):
+                log_memory_usage("Before Process Chunk")
+                process_chunk(chunk, file_path, import_table_name)
+                log_memory_usage("After Process Chunk")
             
             count_query = f"SELECT COUNT(*) FROM {import_table_name}"
             count_result = client.command(count_query)
@@ -432,6 +442,10 @@ def process_chunk(chunk, file_path, table_name):
     chunk = chunk[columns_to_keep]
     chunk = chunk.rename(columns=new_column_names)
     log_memory_usage("After Rename Columns")
+
+    # Filter rows where severity is in the specified levels
+    chunk = chunk[chunk['severity'].isin(VULN_SEVERITY_TO_KEEP)]
+    log_memory_usage("After Filter Severity")
     
     # Replace NaN or None with empty string
     chunk = chunk.fillna("")
@@ -470,11 +484,15 @@ if __name__ == "__main__":  # This block only runs when executed directly
 
     create_report_directories() # Create directories for reports to be downloaded to if they don't exist
 
-    download_sysdig_reports.download_report(0) # Download latest report
+    result = download_sysdig_reports.download_report(0) # Download latest report
+    if not result:
+        logging.error("Failed to download the latest report. Exiting...")
+        exit(1)
 
     # Check if there are files to process
     gz_files = [f for f in os.listdir(REPORT_DOWNLOADS) if f.endswith('.gz')]
     if gz_files:
         process_files()  # Process files in REPORT_DOWNLOADS directory
+        logging.info(f"Finished processing all files in the {REPORT_DOWNLOADS} directory")
     else:
         logging.info(f"No report gz files to process in the {REPORT_DOWNLOADS} directory")
